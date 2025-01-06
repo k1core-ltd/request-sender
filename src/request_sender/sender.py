@@ -1,25 +1,25 @@
 from collections.abc import Callable
-from typing import Literal
+from importlib import metadata
+from typing import Any, Literal
+
 import httpx
-from httpx._types import (
-    RequestContent,
-    RequestData,
-    RequestFiles,
-    QueryParamTypes,
-    HeaderTypes,
-    CookieTypes,
-    AuthTypes,
-    TimeoutTypes,
-    RequestExtensions,
-)
-from httpx._urls import QueryParams, URL  # noqa: F401
+import pydantic
 from httpx._auth import Auth  # noqa: F401
+from httpx._client import USE_CLIENT_DEFAULT, UseClientDefault
 from httpx._config import Proxy, Timeout  # noqa: F401
 from httpx._models import Cookies, Headers, Request  # noqa: F401
-from httpx._client import UseClientDefault, USE_CLIENT_DEFAULT
-from importlib import metadata
-
-import pydantic
+from httpx._types import (
+    AuthTypes,
+    CookieTypes,
+    HeaderTypes,
+    QueryParamTypes,
+    RequestContent,
+    RequestData,
+    RequestExtensions,
+    RequestFiles,
+    TimeoutTypes,
+)
+from httpx._urls import URL, QueryParams  # noqa: F401
 
 
 class HttpxRequestParameters(pydantic.BaseModel):
@@ -55,18 +55,28 @@ class RequestSender:
     - base_url (str, None): Optional base URL to send requests to.
     """
 
-    _client: httpx.Client | None = None
-    _async_client: httpx.AsyncClient | None = None
+    __client_storage: dict[str, httpx.Client] = {}
+    __async_client_storage: dict[str, httpx.AsyncClient] = {}
 
     def __init__(
         self: "RequestSender",
         service_name: str | Callable[..., str] = "Undefined",
         base_url: str | None = None,
+        timeout: Timeout = Timeout(timeout=30.0),
+        verify: bool = True,
+        client_kwargs: dict[str, Any] | None = None,
     ):
         if callable(service_name):
             service_name = service_name()
         self.service_name = service_name
         self.base_url = base_url
+
+        self.additional_args = {
+            "timeout": timeout,
+            "verify": verify,
+        }
+        if client_kwargs is not None:
+            self.additional_args.update(client_kwargs)
 
     def send(
         self: "RequestSender",
@@ -84,6 +94,7 @@ class RequestSender:
 
         client = self.__get_sync_client(
             service_name=self.service_name,
+            additional_args=self.additional_args,
         )
 
         if use_base_url and self.base_url is not None:
@@ -114,6 +125,7 @@ class RequestSender:
 
         client = self.__get_async_client(
             service_name=self.service_name,
+            additional_args=self.additional_args,
         )
 
         if use_base_url and self.base_url is not None:
@@ -128,47 +140,67 @@ class RequestSender:
         )
 
     @staticmethod
-    def _make_headers(service_name: str) -> dict:
+    def _make_headers(
+        service_name: str,
+        request_method: Literal["async", "sync"] = "async",
+    ) -> dict:
         """Returns default headers to use for the requests"""
         return {
             "User-Agent": f"{__package__}/{metadata.version(__package__)}",
             "X-Service-Name": service_name,
-            "X-Request-Method": "async",
+            "X-Request-Method": request_method,
         }
 
     @classmethod
     def __get_sync_client(
         cls: type["RequestSender"],
         service_name: str,
-        timeout: Timeout = Timeout(timeout=30.0),
+        additional_args: dict[str, Any] | None = None,
     ) -> httpx.Client:
         """
         Returns a sync client for the given service name.
         You can define default timeout for the requests, which is set to 30 seconds by default.
         """
-        if cls._client is None or cls._client.is_closed:
-            cls._client = httpx.Client(
-                headers=cls._make_headers(service_name=service_name),
-                timeout=timeout,
-            )
+        if additional_args is None:
+            additional_args = {}
 
-        return cls._client
+        if client := cls.__client_storage.get(service_name, None):
+            if not client.is_closed:
+                return client
+
+        cls.__client_storage[service_name] = httpx.Client(
+            headers=cls._make_headers(
+                service_name=service_name,
+                request_method="sync",
+            ),
+            **additional_args,
+        )
+
+        return cls.__client_storage[service_name]
 
     @classmethod
     def __get_async_client(
         cls: type["RequestSender"],
         service_name: str,
-        timeout: Timeout = Timeout(timeout=30.0),
+        additional_args: dict[str, Any] | None = None,
     ) -> httpx.AsyncClient:
         """
         Returns an async client for the given service name.
         You can define default timeout for the requests, which is set to 30 seconds by default.
-
         """
-        if cls._async_client is None or cls._async_client.is_closed:
-            cls._async_client = httpx.AsyncClient(
-                headers=cls._make_headers(service_name=service_name),
-                timeout=timeout,
-            )
+        if additional_args is None:
+            additional_args = {}
 
-        return cls._async_client
+        if client := cls.__async_client_storage.get(service_name, None):
+            if not client.is_closed:
+                return client
+
+        cls.__async_client_storage[service_name] = httpx.AsyncClient(
+            headers=cls._make_headers(
+                service_name=service_name,
+                request_method="async",
+            ),
+            **additional_args,
+        )
+
+        return cls.__async_client_storage[service_name]
