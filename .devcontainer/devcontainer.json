@@ -6,6 +6,7 @@
 	"build": {
 		"dockerfile": "Dockerfile"
 	},
+	"postAttachCommand": "uv sync && echo 'Installed packages'",
 	"customizations": {
 		"vscode": {
 			"extensions": [
