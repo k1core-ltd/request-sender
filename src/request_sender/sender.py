@@ -1,17 +1,22 @@
+import ssl
+import typing
 from collections.abc import Callable
 from importlib import metadata
 from typing import Any, Literal
 
-import httpx
+import httpx2
 import pydantic
-from httpx._auth import Auth  # noqa: F401
-from httpx._client import USE_CLIENT_DEFAULT, UseClientDefault
-from httpx._config import Proxy, Timeout  # noqa: F401
-from httpx._models import Cookies, Headers, Request  # noqa: F401
-from httpx._types import (
+from httpcore2 import SOCKET_OPTION
+from httpx2._auth import Auth  # noqa: F401
+from httpx2._client import USE_CLIENT_DEFAULT, UseClientDefault
+from httpx2._config import Proxy, Timeout  # noqa: F401
+from httpx2._models import Cookies, Headers, Request  # noqa: F401
+from httpx2._types import (
     AuthTypes,
+    CertTypes,
     CookieTypes,
     HeaderTypes,
+    ProxyTypes,
     QueryParamTypes,
     RequestContent,
     RequestData,
@@ -19,7 +24,7 @@ from httpx._types import (
     RequestFiles,
     TimeoutTypes,
 )
-from httpx._urls import URL, QueryParams  # noqa: F401
+from httpx2._urls import URL, QueryParams  # noqa: F401
 
 
 class HttpxRequestParameters(pydantic.BaseModel):
@@ -43,6 +48,24 @@ class HttpxRequestParameters(pydantic.BaseModel):
     )
 
 
+class TransportParameters(pydantic.BaseModel):
+    verify: ssl.SSLContext | str | bool = True
+    cert: CertTypes | None = None
+    trust_env: bool = True
+    http1: bool = True
+    http2: bool = False
+    limits: httpx2.Limits | None = None
+    proxy: ProxyTypes | None = None
+    uds: str | None = None
+    local_address: str | None = None
+    retries: int = 0
+    socket_options: typing.Iterable[SOCKET_OPTION] | None = None
+
+    model_config = pydantic.ConfigDict(
+        arbitrary_types_allowed=True,
+    )
+
+
 class RequestSender:
     """
     A class that sends requests from a given service.
@@ -55,8 +78,8 @@ class RequestSender:
     - base_url (str, None): Optional base URL to send requests to.
     """
 
-    __client_storage: dict[str, httpx.Client] = {}
-    __async_client_storage: dict[str, httpx.AsyncClient] = {}
+    __client_storage: dict[str, httpx2.Client] = {}
+    __async_client_storage: dict[str, httpx2.AsyncClient] = {}
 
     def __init__(
         self: "RequestSender",
@@ -65,6 +88,7 @@ class RequestSender:
         timeout: Timeout = Timeout(timeout=30.0),
         verify: bool = True,
         client_kwargs: dict[str, Any] | None = None,
+        transport_kwargs: TransportParameters | dict[str, Any] | None = None,
     ):
         if callable(service_name):
             service_name = service_name()
@@ -77,6 +101,13 @@ class RequestSender:
         }
         if client_kwargs is not None:
             self.additional_args.update(client_kwargs)
+        if transport_kwargs is not None:
+            if isinstance(transport_kwargs, TransportParameters):
+                transport_kwargs = transport_kwargs.model_dump()
+
+            self.additional_args["transport"] = httpx2.HTTPTransport(
+                **transport_kwargs,
+            )
 
     def send(
         self: "RequestSender",
@@ -85,7 +116,7 @@ class RequestSender:
         params: HttpxRequestParameters | None = None,
         *,
         use_base_url: bool = True,
-    ) -> "httpx.Response":
+    ) -> "httpx2.Response":
         """
         Send a request to the given URL using the specified method.
         In return you get an httpx Response.
@@ -115,7 +146,7 @@ class RequestSender:
         params: HttpxRequestParameters | None = None,
         *,
         use_base_url: bool = True,
-    ) -> "httpx.Response":
+    ) -> "httpx2.Response":
         """
         ! Async method !
         Send a request to the given URL using the specified method.
@@ -145,8 +176,14 @@ class RequestSender:
         request_method: Literal["async", "sync"] = "async",
     ) -> dict:
         """Returns default headers to use for the requests"""
+        package_name = __package__ or "request-sender"
+        try:
+            version = metadata.version(package_name)
+        except metadata.PackageNotFoundError:
+            version = "0.0.0"
+
         return {
-            "User-Agent": f"{__package__}/{metadata.version(__package__)}",
+            "User-Agent": f"{package_name}/{version}",
             "X-Service-Name": service_name,
             "X-Request-Method": request_method,
         }
@@ -156,7 +193,7 @@ class RequestSender:
         cls: type["RequestSender"],
         service_name: str,
         additional_args: dict[str, Any] | None = None,
-    ) -> httpx.Client:
+    ) -> httpx2.Client:
         """
         Returns a sync client for the given service name.
         You can define default timeout for the requests, which is set to 30 seconds by default.
@@ -168,7 +205,7 @@ class RequestSender:
             if not client.is_closed:
                 return client
 
-        cls.__client_storage[service_name] = httpx.Client(
+        cls.__client_storage[service_name] = httpx2.Client(
             headers=cls._make_headers(
                 service_name=service_name,
                 request_method="sync",
@@ -183,7 +220,7 @@ class RequestSender:
         cls: type["RequestSender"],
         service_name: str,
         additional_args: dict[str, Any] | None = None,
-    ) -> httpx.AsyncClient:
+    ) -> httpx2.AsyncClient:
         """
         Returns an async client for the given service name.
         You can define default timeout for the requests, which is set to 30 seconds by default.
@@ -195,7 +232,7 @@ class RequestSender:
             if not client.is_closed:
                 return client
 
-        cls.__async_client_storage[service_name] = httpx.AsyncClient(
+        cls.__async_client_storage[service_name] = httpx2.AsyncClient(
             headers=cls._make_headers(
                 service_name=service_name,
                 request_method="async",

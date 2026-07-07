@@ -1,3 +1,5 @@
+from httpx2 import HTTPTransport
+
 from request_sender.sender import RequestSender, Timeout
 
 
@@ -51,3 +53,23 @@ def test_two_clients() -> None:
     ) != RequestSender._RequestSender__get_sync_client(
         service_name="sender_2",
     )
+
+
+def test_transport_setup() -> None:
+    sender = RequestSender(
+        service_name="sender_1",
+        transport_kwargs={
+            "retries": 3,
+        },
+    )
+
+    response = sender.send(
+        "GET",
+        "https://httpbin.org/get",
+    )
+
+    assert response.status_code == 200
+
+    sender_transport = RequestSender._RequestSender__client_storage["sender_1"]._transport
+    assert isinstance(sender_transport, HTTPTransport)
+    assert sender_transport._pool._retries == 3
